@@ -120,5 +120,7 @@ pid_t unit_search_main_pid(Unit *u);
 
 int manager_notify_cgroup_empty(Manager *m, const char *group);
 
+bool unit_cgroup_delegate(Unit *u);
+
 const char* cgroup_device_policy_to_string(CGroupDevicePolicy i) _const_;
 CGroupDevicePolicy cgroup_device_policy_from_string(const char *s) _pure_;
