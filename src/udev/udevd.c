@@ -744,7 +744,8 @@ static int synthesize_change(struct udev_device *dev) {
 
         if (streq_ptr("block", udev_device_get_subsystem(dev)) &&
             streq_ptr("disk", udev_device_get_devtype(dev)) &&
-            !startswith(udev_device_get_sysname(dev), "dm-")) {
+            !startswith(udev_device_get_sysname(dev), "dm-") &&
+            !startswith(udev_device_get_sysname(dev), "sr")) {
                 bool part_table_read = false;
                 bool has_partitions = false;
                 int fd;
