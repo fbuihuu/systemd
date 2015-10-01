@@ -198,6 +198,7 @@ int exec_spawn(ExecCommand *command,
                bool selinux_context_net,
                CGroupControllerMask cgroup_mask,
                const char *cgroup_path,
+               bool cgroup_delegate,
                const char *unit_id,
                usec_t watchdog_usec,
                int pipe_fd[2],
@@ -224,6 +225,7 @@ void exec_context_dump(ExecContext *c, FILE* f, const char *prefix);
 int exec_context_load_environment(const ExecContext *c, char ***l);
 
 bool exec_context_may_touch_console(ExecContext *c);
+bool exec_context_maintains_privileges(ExecContext *c);
 
 void exec_status_start(ExecStatus *s, pid_t pid);
 void exec_status_exit(ExecStatus *s, ExecContext *context, pid_t pid, int code, int status);

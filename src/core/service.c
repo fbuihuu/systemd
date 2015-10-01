@@ -1867,6 +1867,7 @@ static int service_spawn(
                        s->socket_fd_selinux_context_net,
                        UNIT(s)->manager->cgroup_supported,
                        path,
+                       s->cgroup_context.delegate,
                        UNIT(s)->id,
                        s->watchdog_usec,
                        s->type == SERVICE_IDLE ? UNIT(s)->manager->idle_pipe : NULL,

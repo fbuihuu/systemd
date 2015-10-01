@@ -1257,6 +1257,7 @@ static int socket_spawn(Socket *s, ExecCommand *c, pid_t *_pid) {
                        s->selinux_context_from_net,
                        UNIT(s)->manager->cgroup_supported,
                        UNIT(s)->cgroup_path,
+                       s->cgroup_context.delegate,
                        UNIT(s)->id,
                        0,
                        NULL,

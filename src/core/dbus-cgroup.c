@@ -135,6 +135,7 @@ static int property_get_device_allow(
 
 const sd_bus_vtable bus_cgroup_vtable[] = {
         SD_BUS_VTABLE_START(0),
+        SD_BUS_PROPERTY("Delegate", "b", bus_property_get_bool, offsetof(CGroupContext, delegate), 0),
         SD_BUS_PROPERTY("CPUAccounting", "b", bus_property_get_bool, offsetof(CGroupContext, cpu_accounting), 0),
         SD_BUS_PROPERTY("CPUShares", "t", bus_property_get_ulong, offsetof(CGroupContext, cpu_shares), 0),
         SD_BUS_PROPERTY("BlockIOAccounting", "b", bus_property_get_bool, offsetof(CGroupContext, blockio_accounting), 0),
@@ -148,6 +149,39 @@ const sd_bus_vtable bus_cgroup_vtable[] = {
         SD_BUS_PROPERTY("DeviceAllow", "a(ss)", property_get_device_allow, 0, 0),
         SD_BUS_VTABLE_END
 };
+
+static int bus_cgroup_set_transient_property(
+                Unit *u,
+                CGroupContext *c,
+                const char *name,
+                sd_bus_message *message,
+                UnitSetPropertiesMode mode,
+                sd_bus_error *error) {
+
+        int r;
+
+        assert(u);
+        assert(c);
+        assert(name);
+        assert(message);
+
+        if (streq(name, "Delegate")) {
+                int b;
+
+                r = sd_bus_message_read(message, "b", &b);
+                if (r < 0)
+                        return r;
+
+                if (mode != UNIT_CHECK) {
+                        c->delegate = b;
+                        unit_write_drop_in_private(u, mode, name, b ? "Delegate=yes" : "Delegate=no");
+                }
+
+                return 1;
+        }
+
+        return 0;
+}
 
 int bus_cgroup_set_property(
                 Unit *u,
@@ -524,6 +558,14 @@ int bus_cgroup_set_property(
                 }
 
                 return 1;
+
+        }
+
+        if (u->transient && u->load_state == UNIT_STUB) {
+                r = bus_cgroup_set_transient_property(u, c, name, message, mode, error);
+                if (r != 0)
+                        return r;
+
         }
 
         return 0;
