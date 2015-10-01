@@ -992,8 +992,8 @@ bool udev_check_for_kmod(pid_t pid) {
         return false;
 }
 #else
-# define udev_set_kmod  (a,b)
-# define udev_unset_kmod(a,b)
+# define udev_check_and_set_kmod(a,b)
+# define udev_check_and_unset_kmod(a,b)
 bool udev_check_for_kmod(pid_t pid) {
         return false;
 }
