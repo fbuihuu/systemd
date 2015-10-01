@@ -180,6 +180,7 @@ AM_CPPFLAGS = \
 	-DPOLKIT_AGENT_BINARY_PATH=\"$(bindir)/pkttyagent\" \
 	-DQUOTACHECK=\"$(QUOTACHECK)\" \
 	-DKEXEC=\"$(KEXEC)\" \
+	-DTEST_DIR=\"$(abs_top_srcdir)/test\" \
 	-I $(top_srcdir)/src \
 	-I $(top_builddir)/src/shared \
 	-I $(top_srcdir)/src/shared \
