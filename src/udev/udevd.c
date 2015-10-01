@@ -301,6 +301,7 @@ static void worker_new(struct event *event)
                                         if (fd_lock >= 0 && flock(fd_lock, LOCK_SH|LOCK_NB) < 0) {
                                                 log_debug("Unable to flock(%s), skipping event handling: %m", udev_device_get_devnode(d));
                                                 err = -EWOULDBLOCK;
+                                                close_nointr_nofail(fd_lock); fd_lock = -1;
                                                 goto skip;
                                         }
                                 }
@@ -318,7 +319,7 @@ static void worker_new(struct event *event)
                         }
 
                         if (fd_lock >= 0)
-                                close(fd_lock);
+                                close_nointr_nofail(fd_lock);
 
                         /* send processed event back to libudev listeners */
                         udev_monitor_send_device(worker_monitor, NULL, dev);
@@ -378,9 +379,9 @@ skip:
 out:
                 udev_device_unref(dev);
                 if (fd_signal >= 0)
-                        close(fd_signal);
+                        close_nointr_nofail(fd_signal);
                 if (fd_ep >= 0)
-                        close(fd_ep);
+                        close_nointr_nofail(fd_ep);
                 close(fd_inotify);
                 close(worker_watch[WRITE_END]);
                 udev_rules_unref(rules);
