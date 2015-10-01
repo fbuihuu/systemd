@@ -1291,6 +1291,7 @@ int main(int argc, char *argv[]) {
         bool loaded_policy = false;
         bool arm_reboot_watchdog = false;
         bool queue_default_job = false;
+        bool empty_etc = false;
         char *switch_root_dir = NULL, *switch_root_init = NULL;
         static struct rlimit saved_rlimit_nofile = { 0, 0 };
 
@@ -1575,6 +1576,9 @@ int main(int argc, char *argv[]) {
                 if (in_initrd())
                         log_info("Running in initial RAM disk.");
 
+                empty_etc = dir_is_empty("/etc") > 0;
+                if (empty_etc)
+                        log_info("Running with unpopulated /etc.");
         } else {
                 _cleanup_free_ char *t;
 		    
@@ -1655,6 +1659,7 @@ int main(int argc, char *argv[]) {
 
         manager_set_defaults(m);
         manager_set_show_status(m, arg_show_status);
+        manager_set_first_boot(m, empty_etc);
 
         /* Remember whether we should queue the default job */
         queue_default_job = !arg_serialization || arg_switched_root;
