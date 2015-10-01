@@ -899,3 +899,5 @@ union file_handle_union {
 };
 
 int umount_recursive(const char *target, int flags);
+
+int sethostname_idempotent(const char *s);
