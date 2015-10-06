@@ -61,7 +61,4 @@
   <xsl:text>"</xsl:text>
 </xsl:template>
 
-<xsl:param name="man.output.in.separate.dir" select="1"></xsl:param>
-<xsl:param name="man.output.base.dir"></xsl:param>
-
 </xsl:stylesheet>
