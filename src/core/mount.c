@@ -121,6 +121,12 @@ static bool mount_is_automount(const MountParameters *p) {
                                  "x-systemd.automount\0");
 }
 
+static bool mount_is_nofail(const MountParameters *p) {
+        assert(p);
+
+        return fstab_test_option(p->options, "nofail\0");
+}
+
 static bool mount_state_active(MountState state) {
         return IN_SET(state,
                       MOUNT_MOUNTING,
@@ -815,13 +821,42 @@ static void mount_enter_dead(Mount *m, MountResult f) {
         dynamic_creds_destroy(&m->dynamic_creds);
 }
 
-static void mount_enter_mounted(Mount *m, MountResult f) {
+static int mount_fix_nofail_ordering(Mount *m) {
+        MountParameters *p;
+        const char *target;
+
         assert(m);
+
+        p = get_mount_parameters_fragment(m);
+        if (!p || !mount_is_nofail(p))
+                return 0;
+
+        if (mount_is_extrinsic(m))
+                return 0;
+
+        if (!UNIT(m)->default_dependencies)
+                return 0;
+
+        target = mount_is_network(p) ? SPECIAL_REMOTE_FS_TARGET : SPECIAL_LOCAL_FS_TARGET;
+        return unit_add_dependency_by_name(UNIT(m), UNIT_BEFORE, target, NULL, true);
+}
+
+static void mount_enter_mounted(Mount *m, MountResult f) {
+        int r;
+
+        assert(m);
+
+        r = mount_fix_nofail_ordering(m);
+        if (r < 0)
+                goto fail;
 
         if (m->result == MOUNT_SUCCESS)
                 m->result = f;
 
         mount_set_state(m, MOUNT_MOUNTED);
+        return;
+fail:
+        log_unit_warning_errno(UNIT(m), r, "Failed to fix ordering dependency: %m");
 }
 
 static void mount_enter_signal(Mount *m, MountState state, MountResult f) {
