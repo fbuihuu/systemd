@@ -855,15 +855,31 @@ static int path_open_parent_safe(const char *path) {
         return fd;
 }
 
+static int path_open_safe(const char *path) {
+        int fd;
+
+        /* path_open_safe() returns a file descriptor opened with O_PATH after
+         * verifying that the path doesn't contain unsafe transitions, except
+         * for its final component as the function does not follow symlink. */
+
+        assert(path);
+
+        fd = chase_symlinks(path, NULL, CHASE_OPEN|CHASE_SAFE|CHASE_NOFOLLOW, NULL);
+        if (fd == -EPERM)
+                log_error("Unsafe symlinks encountered in %s, aborting.", path);
+
+        return fd;
+}
+
 static int path_set_perms(Item *i, const char *path) {
         _cleanup_close_ int fd = -1;
 
         assert(i);
         assert(path);
 
-        fd = open(path, O_NOFOLLOW|O_CLOEXEC|O_PATH);
+        fd = path_open_safe(path);
         if (fd < 0)
-                return log_error_errno(errno, "Adjusting owner and mode for %s failed: %m", path);
+                return log_error_errno(fd, "Adjusting owner and mode for %s failed: %m", path);
 
         return fd_set_perms(i, fd);
 }
@@ -936,7 +952,7 @@ static int path_set_xattrs(Item *i, const char *path) {
         assert(i);
         assert(path);
 
-        fd = open(path, O_CLOEXEC|O_NOFOLLOW|O_PATH);
+        fd = path_open_safe(path);
         if (fd < 0)
                 return log_error_errno(errno, "Cannot open '%s': %m", path);
 
@@ -1063,7 +1079,7 @@ static int path_set_acls(Item *item, const char *path) {
         assert(item);
         assert(path);
 
-        fd = open(path, O_NOFOLLOW|O_CLOEXEC|O_PATH);
+        fd = path_open_safe(path);
         if (fd < 0)
                 return log_error_errno(errno, "Adjusting ACL of %s failed: %m", path);
 
@@ -1222,7 +1238,7 @@ static int path_set_attribute(Item *item, const char *path) {
         if (!item->attribute_set || item->attribute_mask == 0)
                 return 0;
 
-        fd = open(path, O_CLOEXEC|O_NOFOLLOW|O_PATH);
+        fd = path_open_safe(path);
         if (fd < 0)
                 return log_error_errno(errno, "Cannot open '%s': %m", path);
 
