@@ -838,6 +838,23 @@ shortcut:
         return label_fix(path, 0);
 }
 
+static int path_open_parent_safe(const char *path) {
+        _cleanup_free_ char *dn = NULL;
+        int fd;
+
+        dn = dirname_malloc(path);
+        if (!dn)
+                return -ENOMEM;
+
+        fd = chase_symlinks(dn, NULL, CHASE_OPEN|CHASE_SAFE, NULL);
+        if (fd == -EPERM)
+                return log_error_errno(fd, "Unsafe symlinks encountered in %s, aborting.", path);
+        if (fd < 0)
+                return log_error_errno(fd, "Failed to validate path %s: %m", path);
+
+        return fd;
+}
+
 static int path_set_perms(Item *i, const char *path) {
         _cleanup_close_ int fd = -1;
 
@@ -1264,8 +1281,9 @@ static int write_one_file(Item *i, const char *path) {
 }
 
 static int create_file(Item *i, const char *path) {
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -1, dir_fd = -1;
         int flags, r = 0;
+        char *bn;
         struct stat st;
 
         assert(i);
@@ -1274,11 +1292,18 @@ static int create_file(Item *i, const char *path) {
 
         /* 'f' operates on regular files exclusively. */
 
+        /* Validate the path and keep the fd on the directory for opening the
+         * file so we're sure that it can't be changed behind our back. */
+        dir_fd = path_open_parent_safe(path);
+        if (dir_fd < 0)
+                return dir_fd;
+
+        bn = basename(path);
         flags = O_CREAT|O_EXCL|O_NOFOLLOW;
 
         RUN_WITH_UMASK(0000) {
                 mac_selinux_create_file_prepare(path, S_IFREG);
-                fd = open(path, flags|O_NDELAY|O_CLOEXEC|O_WRONLY|O_NOCTTY, i->mode);
+                fd = openat(dir_fd, bn, flags|O_NDELAY|O_CLOEXEC|O_WRONLY|O_NOCTTY, i->mode);
                 mac_selinux_create_file_clear();
         }
 
@@ -1294,7 +1319,7 @@ static int create_file(Item *i, const char *path) {
                  * need to be changed. For read-only filesystems, we let
                  * fd_set_perms() report the error if the perms need to be
                  * modified. */
-                fd = open(path, O_NOFOLLOW|O_CLOEXEC|O_PATH, i->mode);
+                fd = openat(dir_fd, bn, O_NOFOLLOW|O_CLOEXEC|O_PATH, i->mode);
                 if (fd < 0)
                         return log_error_errno(errno, "Failed to re-open file %s: %m", path);
 
