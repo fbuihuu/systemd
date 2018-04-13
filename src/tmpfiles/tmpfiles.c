@@ -769,8 +769,9 @@ static bool hardlink_vulnerable(const struct stat *st) {
         return !S_ISDIR(st->st_mode) && st->st_nlink > 1 && dangerous_hardlinks();
 }
 
-static int fd_set_perms(Item *i, int fd, const struct stat *st) {
+static int fd_set_perms(Item *i, int fd) {
         _cleanup_free_ char *path = NULL;
+        struct stat st;
         int r;
 
         assert(i);
@@ -783,30 +784,33 @@ static int fd_set_perms(Item *i, int fd, const struct stat *st) {
         if (!i->mode_set && !i->uid_set && !i->gid_set)
                 goto shortcut;
 
-        if (hardlink_vulnerable(st)) {
+        if (fstat(fd, &st) < 0)
+                return log_error_errno(errno, "stat(%s) failed: %m", path);
+
+        if (hardlink_vulnerable(&st)) {
                 log_error("Refusing to set permissions on hardlinked file %s while the fs.protected_hardlinks sysctl is turned off.", path);
                 return -EPERM;
         }
 
         if (i->mode_set) {
-                if (S_ISLNK(st->st_mode))
+                if (S_ISLNK(st.st_mode))
                         log_debug("Skipping mode fix for symlink %s.", path);
                 else {
                         mode_t m = i->mode;
 
                         if (i->mask_perms) {
-                                if (!(st->st_mode & 0111))
+                                if (!(st.st_mode & 0111))
                                         m &= ~0111;
-                                if (!(st->st_mode & 0222))
+                                if (!(st.st_mode & 0222))
                                         m &= ~0222;
-                                if (!(st->st_mode & 0444))
+                                if (!(st.st_mode & 0444))
                                         m &= ~0444;
-                                if (!S_ISDIR(st->st_mode))
+                                if (!S_ISDIR(st.st_mode))
                                         m &= ~07000; /* remove sticky/sgid/suid bit, unless directory */
                         }
 
-                        if (m == (st->st_mode & 07777))
-                                log_debug("\"%s\" has correct mode %o already.", path, st->st_mode);
+                        if (m == (st.st_mode & 07777))
+                                log_debug("\"%s\" has correct mode %o already.", path, st.st_mode);
                         else {
                                 log_debug("Changing \"%s\" to mode %o.", path, m);
                                 if (fchmod_opath(fd, m) < 0)
@@ -815,8 +819,8 @@ static int fd_set_perms(Item *i, int fd, const struct stat *st) {
                 }
         }
 
-        if ((i->uid_set && i->uid != st->st_uid) ||
-            (i->gid_set && i->gid != st->st_gid)) {
+        if ((i->uid_set && i->uid != st.st_uid) ||
+            (i->gid_set && i->gid != st.st_gid)) {
                 log_debug("Changing \"%s\" to owner "UID_FMT":"GID_FMT,
                           path,
                           i->uid_set ? i->uid : UID_INVALID,
@@ -836,7 +840,6 @@ shortcut:
 
 static int path_set_perms(Item *i, const char *path) {
         _cleanup_close_ int fd = -1;
-        struct stat st;
 
         assert(i);
         assert(path);
@@ -856,13 +859,18 @@ static int path_set_perms(Item *i, const char *path) {
                 return r;
         }
 
-        if (fstat(fd, &st) < 0)
-                return log_error_errno(errno, "Failed to fstat() file %s: %m", path);
+        if (i->type == EMPTY_DIRECTORY) {
+                struct stat st;
 
-        if (i->type == EMPTY_DIRECTORY && !S_ISDIR(st.st_mode))
-                return log_error_errno(EEXIST, "'%s' already exists and is not a directory. ", path);
+                /* FIXME: introduce fd_is_dir() helper ? */
+                if (fstat(fd, &st) < 0)
+                        return log_error_errno(errno, "Failed to fstat() file %s: %m", path);
 
-        return fd_set_perms(i, fd, &st);
+                if(!S_ISDIR(st.st_mode))
+                        return log_error_errno(EEXIST, "'%s' already exists and is not a directory. ", path);
+        }
+
+        return fd_set_perms(i, fd);
 }
 
 static int parse_xattrs_from_arg(Item *i) {
@@ -903,7 +911,7 @@ static int parse_xattrs_from_arg(Item *i) {
         return 0;
 }
 
-static int fd_set_xattrs(Item *i, int fd, const struct stat *st) {
+static int fd_set_xattrs(Item *i, int fd) {
         char procfs_path[STRLEN("/proc/self/fd/") + DECIMAL_STR_MAX(int)];
         _cleanup_free_ char *path = NULL;
         char **name, **value;
@@ -937,7 +945,7 @@ static int path_set_xattrs(Item *i, const char *path) {
         if (fd < 0)
                 return log_error_errno(errno, "Cannot open '%s': %m", path);
 
-        return fd_set_xattrs(i, fd, NULL);
+        return fd_set_xattrs(i, fd);
 }
 
 static int parse_acls_from_arg(Item *item) {
@@ -1005,26 +1013,29 @@ static int path_set_acl(const char *path, const char *pretty, acl_type_t type, a
 }
 #endif
 
-static int fd_set_acls(Item *item, int fd, const struct stat *st) {
+static int fd_set_acls(Item *item, int fd) {
         int r = 0;
 #if HAVE_ACL
         char procfs_path[STRLEN("/proc/self/fd/") + DECIMAL_STR_MAX(int)];
         _cleanup_free_ char *path = NULL;
+        struct stat st;
 
         assert(item);
         assert(fd);
-        assert(st);
 
         r = fd_get_path(fd, &path);
         if (r < 0)
                 return r;
 
-        if (hardlink_vulnerable(st)) {
+        if (fstat(fd, &st) < 0)
+                return log_error_errno(errno, "Failed to fstat() file %s: %m", path);
+
+        if (hardlink_vulnerable(&st)) {
                 log_error("Refusing to set ACLs on hardlinked file %s while the fs.protected_hardlinks sysctl is turned off.", path);
                 return -EPERM;
         }
 
-        if (S_ISLNK(st->st_mode)) {
+        if (S_ISLNK(st.st_mode)) {
                 log_debug("Skipping ACL fix for symlink %s.", path);
                 return 0;
         }
@@ -1053,7 +1064,6 @@ static int path_set_acls(Item *item, const char *path) {
         int r = 0;
 #ifdef HAVE_ACL
         _cleanup_close_ int fd = -1;
-        struct stat st;
 
         assert(item);
         assert(path);
@@ -1062,10 +1072,7 @@ static int path_set_acls(Item *item, const char *path) {
         if (fd < 0)
                 return log_error_errno(errno, "Adjusting ACL of %s failed: %m", path);
 
-        if (fstat(fd, &st) < 0)
-                return log_error_errno(errno, "Failed to fstat() file %s: %m", path);
-
-        r = fd_set_acls(item, fd, &st);
+        r = fd_set_acls(item, fd);
  #endif
          return r;
  }
@@ -1169,9 +1176,10 @@ static int parse_attribute_from_arg(Item *item) {
         return 0;
 }
 
-static int fd_set_attribute(Item *item, int fd, const struct stat *st) {
+static int fd_set_attribute(Item *item, int fd) {
         _cleanup_close_ int procfs_fd = -1;
         _cleanup_free_ char *path = NULL;
+        struct stat st;
         unsigned f;
         int r;
 
@@ -1182,10 +1190,13 @@ static int fd_set_attribute(Item *item, int fd, const struct stat *st) {
         if (r < 0)
                 return r;
 
+        if (fstat(fd, &st) < 0)
+                return log_error_errno(errno, "stat(%s) failed: %m", path);
+
         /* Issuing the file attribute ioctls on device nodes is not
          * safe, as that will be delivered to the drivers, not the
          * file system containing the device node. */
-        if (!S_ISREG(st->st_mode) && !S_ISDIR(st->st_mode)) {
+        if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) {
                 log_error("Setting file flags is only supported on regular files and directories, cannot set on '%s'.", path);
                 return -EINVAL;
         }
@@ -1193,7 +1204,7 @@ static int fd_set_attribute(Item *item, int fd, const struct stat *st) {
         f = item->attribute_value & item->attribute_mask;
 
         /* Mask away directory-specific flags */
-        if (!S_ISDIR(st->st_mode))
+        if (!S_ISDIR(st.st_mode))
                 f &= ~FS_DIRSYNC_FL;
 
         procfs_fd = fd_reopen(fd, O_RDONLY|O_CLOEXEC|O_NOATIME);
@@ -1212,7 +1223,6 @@ static int fd_set_attribute(Item *item, int fd, const struct stat *st) {
 
 static int path_set_attribute(Item *item, const char *path) {
         _cleanup_close_ int fd = -1;
-        struct stat st;
 
         if (!item->attribute_set || item->attribute_mask == 0)
                 return 0;
@@ -1221,10 +1231,7 @@ static int path_set_attribute(Item *item, const char *path) {
         if (fd < 0)
                 return log_error_errno(errno, "Cannot open '%s': %m", path);
 
-        if (fstat(fd, &st) < 0)
-                return log_error_errno(errno, "Cannot stat '%s': %m", path);
-
-        return fd_set_attribute(item, fd, &st);
+        return fd_set_attribute(item, fd);
 }
 
 static int write_one_file(Item *i, const char *path) {
@@ -1291,20 +1298,26 @@ static int write_one_file(Item *i, const char *path) {
 }
 
 typedef int (*action_t)(Item *, const char *);
-typedef int (*fdaction_t)(Item *, int fd, const struct stat *st);
+typedef int (*fdaction_t)(Item *, int fd);
 
-static int item_do(Item *i, int fd, const struct stat *st, fdaction_t action) {
+static int item_do(Item *i, int fd, fdaction_t action) {
+        struct stat st;
         int r = 0, q;
 
         assert(i);
         assert(fd >= 0);
-        assert(st);
 
         /* This returns the first error we run into, but nevertheless
          * tries to go on */
-        r = action(i, fd, st);
+        r = action(i, fd);
 
-        if (S_ISDIR(st->st_mode)) {
+        if (fstat(fd, &st) < 0) {
+                if (r >= 0)
+                        r = -errno;
+                goto finish;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
                 char procfs_path[strlen("/proc/self/fd/") + DECIMAL_STR_MAX(int)];
                 _cleanup_closedir_ DIR *d = NULL;
                 struct dirent *de;
@@ -1320,16 +1333,15 @@ static int item_do(Item *i, int fd, const struct stat *st, fdaction_t action) {
                 }
 
                 FOREACH_DIRENT_ALL(de, d, q = -errno; goto finish) {
-                        struct stat de_st;
                         int de_fd;
 
                         if (dot_or_dot_dot(de->d_name))
                                 continue;
 
                         de_fd = openat(fd, de->d_name, O_NOFOLLOW|O_CLOEXEC|O_PATH);
-                        if (de_fd >= 0 && fstat(de_fd, &de_st) >= 0)
+                        if (de_fd >= 0)
                                 /* pass ownership of dirent fd over  */
-                                q = item_do(i, de_fd, &de_st, action);
+                                q = item_do(i, de_fd, action);
                         else
                                 q = -errno;
 
@@ -1375,7 +1387,6 @@ static int glob_item_recursively(Item *i, fdaction_t action) {
 
         STRV_FOREACH(fn, g.gl_pathv) {
                 _cleanup_close_ int fd = -1;
-                struct stat st;
 
                 /* Make sure we won't trigger/follow file object (such as
                  * device nodes, automounts, ...) pointed out by 'fn' with
@@ -1388,12 +1399,7 @@ static int glob_item_recursively(Item *i, fdaction_t action) {
                         continue;
                 }
 
-                if (fstat(fd, &st) < 0) {
-                        r = r ?: -errno;
-                        continue;
-                }
-
-                k = item_do(i, fd, &st, action);
+                k = item_do(i, fd, action);
                 if (k < 0 && r == 0)
                         r = k;
 
