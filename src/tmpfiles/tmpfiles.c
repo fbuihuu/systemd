@@ -862,30 +862,8 @@ static int path_set_perms(Item *i, const char *path) {
         assert(path);
 
         fd = open(path, O_NOFOLLOW|O_CLOEXEC|O_PATH);
-        if (fd < 0) {
-                int level = LOG_ERR, r = -errno;
-
-                /* Option "e" operates only on existing objects. Do not
-                 * print errors about non-existent files or directories */
-                if (i->type == EMPTY_DIRECTORY && errno == ENOENT) {
-                        level = LOG_DEBUG;
-                        r = 0;
-                }
-
-                log_full_errno(level, errno, "Adjusting owner and mode for %s failed: %m", path);
-                return r;
-        }
-
-        if (i->type == EMPTY_DIRECTORY) {
-                struct stat st;
-
-                /* FIXME: introduce fd_is_dir() helper ? */
-                if (fstat(fd, &st) < 0)
-                        return log_error_errno(errno, "Failed to fstat() file %s: %m", path);
-
-                if(!S_ISDIR(st.st_mode))
-                        return log_error_errno(EEXIST, "'%s' already exists and is not a directory. ", path);
-        }
+        if (fd < 0)
+                return log_error_errno(errno, "Adjusting owner and mode for %s failed: %m", path);
 
         return fd_set_perms(i, fd);
 }
@@ -1609,6 +1587,25 @@ static int create_subvolume(Item *i, const char *path) {
         return r;
 }
 
+static int empty_directory(Item *i, const char *path) {
+        int r;
+
+        assert(i);
+        assert(i->type == EMPTY_DIRECTORY);
+
+        r = is_dir(path, false);
+        if (r == -ENOENT)
+                /* Option "e" operates only on existing objects. Do not
+                 * print errors about non-existent files or directories */
+                return log_debug_errno(0, "Skipping missing file: %s", path);
+        if (r < 0)
+                return log_error_errno(r, "is_dir() failed on file %s: %m", path);
+        if (r == 0)
+                return log_error_errno(EEXIST, "'%s' already exists and is not a directory. ", path);
+
+        return path_set_perms(i, path);
+}
+
 static int create_device(Item *i, mode_t file_type) {
         _cleanup_close_ int dfd = -1, fd = -1;
         CreationMode creation;
@@ -1869,7 +1866,7 @@ static int create_item(Item *i) {
                 break;
 
         case EMPTY_DIRECTORY:
-                r = glob_item(i, path_set_perms);
+                r = glob_item(i, empty_directory);
                 if (r < 0)
                         return r;
                 break;
