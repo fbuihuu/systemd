@@ -27,6 +27,7 @@ static void test_chase_symlinks(void) {
         _cleanup_free_ char *result = NULL;
         char temp[] = "/tmp/test-chase.XXXXXX";
         const char *top, *p, *pslash, *q, *qslash;
+        struct stat st;
         int r, pfd;
 
         assert_se(mkdtemp(temp));
@@ -270,6 +271,17 @@ static void test_chase_symlinks(void) {
                 assert_se(sd_id128_get_machine(&b) >= 0);
                 assert_se(sd_id128_equal(a, b));
         }
+
+        /* Test CHASE_NOFOLLOW */
+
+        p = strjoina(temp, "/target");
+        q = strjoina(temp, "/symlink");
+        assert_se(symlink(p, q) >= 0);
+        pfd = chase_symlinks(q, NULL, CHASE_OPEN|CHASE_NOFOLLOW, &result);
+        assert_se(pfd > 0);
+        assert_se(path_equal(result, q));
+        assert_se(fstat(pfd, &st) >= 0);
+        assert_se(S_ISLNK(st.st_mode));
 
         /* Test CHASE_ONE */
 
