@@ -1528,8 +1528,7 @@ static int create_directory_or_subvolume(Item *i, const char *path) {
                         RUN_WITH_UMASK((~i->mode) & 0777)
                                 r = btrfs_subvol_make(i->path);
                 }
-        } else
-                r = 0;
+        }
 
         if (IN_SET(i->type, CREATE_DIRECTORY, TRUNCATE_DIRECTORY) || r == -ENOTTY)
                 RUN_WITH_UMASK(0000)
@@ -1562,9 +1561,9 @@ static int create_directory_or_subvolume(Item *i, const char *path) {
                 if (r == -ENOTTY)
                         log_debug_errno(r, "Couldn't adjust quota for subvolume \"%s\" (unsupported fs or dir not a subvolume): %m", i->path);
                 else if (r == -EROFS)
-                        log_debug_errno(r, "Couldn't adjust quota for subvolume \"%s\" (fs is read-only).", i->path);
+                        log_debug("Couldn't adjust quota for subvolume \"%s\" (fs is read-only).", i->path);
                 else if (r == -ENOPROTOOPT)
-                        log_debug_errno(r, "Couldn't adjust quota for subvolume \"%s\" (quota support is disabled).", i->path);
+                        log_debug("Couldn't adjust quota for subvolume \"%s\" (quota support is disabled).", i->path);
                 else if (r < 0)
                         q = log_error_errno(r, "Failed to adjust quota for subvolume \"%s\": %m", i->path);
                 else if (r > 0)
