@@ -403,6 +403,32 @@ int mknod_atomic(const char *path, mode_t mode, dev_t dev) {
         return 0;
 }
 
+int mkfifoat_atomic(int dir_fd, const char *path, mode_t mode) {
+        _cleanup_free_ char *dir_path = NULL;
+        _cleanup_free_ char *t = NULL;
+        int r;
+
+        assert(path);
+
+        r = fd_get_path(dir_fd, &dir_path);
+        if (r < 0)
+                return r;
+
+        r = tempfn_random_child(dir_path, NULL, &t);
+        if (r < 0)
+                return r;
+
+        if (mkfifoat(dir_fd, basename(t), mode) < 0)
+                return -errno;
+
+        if (renameat(dir_fd, basename(t), dir_fd, basename(path)) < 0) {
+                unlink_noerrno(t);
+                return -errno;
+        }
+
+        return 0;
+}
+
 int mkfifo_atomic(const char *path, mode_t mode) {
         _cleanup_free_ char *t = NULL;
         int r;
