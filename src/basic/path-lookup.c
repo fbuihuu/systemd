@@ -91,6 +91,32 @@ int xdg_user_data_dir(char **ret, const char *suffix) {
         return 1;
 }
 
+int xdg_user_state_dir(char **ret, const char *suffix) {
+        _cleanup_free_ char *j = NULL;
+        const char *e;
+        int r;
+
+        assert(ret);
+        assert(suffix);
+
+        e = getenv("XDG_STATE_HOME");
+        if (e) {
+                j = path_join(e, suffix);
+                if (!j)
+                        return -ENOMEM;
+        } else {
+                r = get_home_dir(&j);
+                if (r < 0)
+                        return r;
+
+                if (!path_extend(&j, "/.local/state", suffix))
+                        return -ENOMEM;
+        }
+
+        *ret = TAKE_PTR(j);
+        return 1;
+}
+
 static const char* const user_data_unit_paths[] = {
         "/usr/local/lib/systemd/user",
         "/usr/local/share/systemd/user",
