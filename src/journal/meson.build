@@ -31,6 +31,12 @@ sources += custom_target(
         output : 'journald-gperf.c',
         command : [gperf, '@INPUT@', '--output-file', '@OUTPUT@'])
 
+sources += custom_target(
+        'journald-user-gperf.c',
+        input : 'journald-user-gperf.gperf',
+        output : 'journald-user-gperf.c',
+        command : [gperf, '@INPUT@', '--output-file', '@OUTPUT@'])
+
 libjournal_core = static_library(
         'journal-core',
         sources,

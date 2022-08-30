@@ -20,6 +20,13 @@ typedef struct Server Server;
 #include "time-util.h"
 #include "varlink.h"
 
+typedef enum Mode {
+        MODE_SYSTEM,
+        MODE_USER,
+        _MODE_MAX,
+        _MODE_INVALID = -EINVAL,
+} Mode;
+
 typedef enum Storage {
         STORAGE_AUTO,
         STORAGE_VOLATILE,
@@ -62,6 +69,8 @@ typedef struct JournalStorage {
 } JournalStorage;
 
 struct Server {
+        Mode mode;
+
         char *namespace;
 
         int syslog_fd;
@@ -177,6 +186,9 @@ struct Server {
         VarlinkServer *varlink_server;
 };
 
+#define SERVER_IS_SYSTEM(s) ((s)->mode == MODE_SYSTEM)
+#define SERVER_IS_USER(s) ((s)->mode == MODE_USER)
+
 #define SERVER_MACHINE_ID(s) ((s)->machine_id_field + STRLEN("_MACHINE_ID="))
 
 /* Extra fields for any log messages */
@@ -202,6 +214,7 @@ void server_driver_message(Server *s, pid_t object_pid, const char *message_id, 
 
 /* gperf lookup function */
 const struct ConfigPerfItem* journald_gperf_lookup(const char *key, GPERF_LEN_TYPE length);
+const struct ConfigPerfItem* journald_user_gperf_lookup(const char *key, GPERF_LEN_TYPE length);
 
 CONFIG_PARSER_PROTOTYPE(config_parse_storage);
 CONFIG_PARSER_PROTOTYPE(config_parse_line_max);
@@ -215,7 +228,7 @@ CONFIG_PARSER_PROTOTYPE(config_parse_split_mode);
 const char *split_mode_to_string(SplitMode s) _const_;
 SplitMode split_mode_from_string(const char *s) _pure_;
 
-int server_init(Server *s, const char *namespace);
+int server_init(Server *s, Mode mode, const char *namespace);
 void server_done(Server *s);
 void server_sync(Server *s);
 void server_vacuum(Server *s, bool verbose);

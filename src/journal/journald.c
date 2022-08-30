@@ -13,18 +13,23 @@
 #include "process-util.h"
 #include "sigbus.h"
 
+bool arg_user = false;
+
 int main(int argc, char *argv[]) {
         const char *namespace;
         LogTarget log_target;
         Server server;
-        int r;
+        int max_argc, r;
 
-        if (argc > 2) {
-                log_error("This program takes one or no arguments.");
+        arg_user = streq_ptr(argv[1], "--user");
+        max_argc = arg_user ? 3 : 2;
+
+        if (argc > max_argc) {
+                log_error("This program accepts '--user' option and takes one or no arguments.");
                 return EXIT_FAILURE;
         }
 
-        namespace = argc > 1 ? empty_to_null(argv[1]) : NULL;
+        namespace = argc == max_argc ? empty_to_null(argv[argc - 1]) : NULL;
 
         log_set_facility(LOG_SYSLOG);
 
@@ -48,7 +53,7 @@ int main(int argc, char *argv[]) {
 
         sigbus_install();
 
-        r = server_init(&server, namespace);
+        r = server_init(&server, arg_user ? MODE_USER : MODE_SYSTEM, namespace);
         if (r < 0)
                 goto finish;
 
@@ -56,10 +61,10 @@ int main(int argc, char *argv[]) {
         server_flush_to_var(&server, true);
         server_flush_dev_kmsg(&server);
 
-        if (server.namespace)
-                log_debug("systemd-journald running as PID "PID_FMT" for namespace '%s'.", getpid_cached(), server.namespace);
-        else
-                log_debug("systemd-journald running as PID "PID_FMT" for the system.", getpid_cached());
+        log_debug("systemd-journald %s instance running as PID "PID_FMT"%s.",
+                  SERVER_IS_SYSTEM(&server) ? "system" : "user",
+                  getpid_cached(),
+                  server.namespace ? strjoina(" for namespace '", server.namespace, "'") : "");
 
         server_driver_message(&server, 0,
                               "MESSAGE_ID=" SD_MESSAGE_JOURNAL_START_STR,
@@ -121,10 +126,10 @@ int main(int argc, char *argv[]) {
                 server_maybe_warn_forward_syslog_missed(&server);
         }
 
-        if (server.namespace)
-                log_debug("systemd-journald stopped as PID "PID_FMT" for namespace '%s'.", getpid_cached(), server.namespace);
-        else
-                log_debug("systemd-journald stopped as PID "PID_FMT" for the system.", getpid_cached());
+        log_debug("systemd-journald %s instance stopped as PID "PID_FMT"%s.",
+                  SERVER_IS_SYSTEM(&server) ? "system" : "user",
+                  getpid_cached(),
+                  server.namespace ? strjoina(" for namespace '", server.namespace, "'") : "");
 
         server_driver_message(&server, 0,
                               "MESSAGE_ID=" SD_MESSAGE_JOURNAL_STOP_STR,

@@ -1,0 +1,44 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+%{
+#if __GNUC__ >= 7
+_Pragma("GCC diagnostic ignored \"-Wimplicit-fallthrough\"")
+#endif
+#include <stddef.h>
+#include <sys/socket.h>
+#include "conf-parser.h"
+#include "journald-server.h"
+%}
+struct ConfigPerfItem;
+%null_strings
+%language=ANSI-C
+%define slot-name section_and_lvalue
+%define hash-function-name journald_user_gperf_hash
+%define lookup-function-name journald_user_gperf_lookup
+%readonly-tables
+%omit-struct-type
+%struct-type
+%includes
+%%
+Journal.Storage,                config_parse_storage,    0, offsetof(Server, storage)
+Journal.Compress,               config_parse_compress,   0, offsetof(Server, compress)
+Journal.Seal,                   config_parse_bool,       0, offsetof(Server, seal)
+Journal.SyncIntervalSec,        config_parse_sec,        0, offsetof(Server, sync_interval_usec)
+Journal.RateLimitIntervalSec,   config_parse_sec,        0, offsetof(Server, ratelimit_interval)
+Journal.RateLimitBurst,         config_parse_unsigned,   0, offsetof(Server, ratelimit_burst)
+Journal.PersistentMaxUse,       config_parse_iec_uint64, 0, offsetof(Server, persistent_storage.metrics.max_use)
+Journal.PersistentMaxFileSize,  config_parse_iec_uint64, 0, offsetof(Server, persistent_storage.metrics.max_size)
+Journal.PersistentKeepFree,     config_parse_iec_uint64, 0, offsetof(Server, persistent_storage.metrics.keep_free)
+Journal.PersistentMaxFiles,     config_parse_uint64,     0, offsetof(Server, persistent_storage.metrics.n_max_files)
+Journal.RuntimeMaxUse,          config_parse_iec_uint64, 0, offsetof(Server, volatile_storage.metrics.max_use)
+Journal.RuntimeMaxFileSize,     config_parse_iec_uint64, 0, offsetof(Server, volatile_storage.metrics.max_size)
+Journal.RuntimeKeepFree,        config_parse_iec_uint64, 0, offsetof(Server, volatile_storage.metrics.keep_free)
+Journal.RuntimeMaxFiles,        config_parse_uint64,     0, offsetof(Server, volatile_storage.metrics.n_max_files)
+Journal.MaxRetentionSec,        config_parse_sec,        0, offsetof(Server, max_retention_usec)
+Journal.MaxFileSec,             config_parse_sec,        0, offsetof(Server, max_file_usec)
+Journal.MaxLevelStore,          config_parse_log_level,  0, offsetof(Server, max_level_store)
+Journal.MaxLevelSyslog,         config_parse_log_level,  0, offsetof(Server, max_level_syslog)
+Journal.MaxLevelKMsg,           config_parse_log_level,  0, offsetof(Server, max_level_kmsg)
+Journal.MaxLevelConsole,        config_parse_log_level,  0, offsetof(Server, max_level_console)
+Journal.MaxLevelWall,           config_parse_log_level,  0, offsetof(Server, max_level_wall)
+Journal.SplitMode,              config_parse_split_mode, 0, offsetof(Server, split_mode)
+Journal.LineMax,                config_parse_line_max,   0, offsetof(Server, line_max)

@@ -271,7 +271,24 @@ static int open_null_as(int flags, int nfd) {
         return move_fd(fd, nfd, false);
 }
 
-static int connect_journal_socket(
+static int connect_user_journal_socket(int fd, uid_t uid) {
+        _cleanup_free_ char *p = NULL;
+        int r;
+
+        r = xdg_user_runtime_dir(&p, "/systemd/journal/stdout");
+        if (r < 0)
+                return log_error_errno(r, "Failed to retrieve user runtime directory, aborting: %m");
+
+        r = connect_unix_path(fd, AT_FDCWD, p);
+        if (r < 0)
+                log_full_errno(IN_SET(r, -ENOENT, -ECONNREFUSED) ? LOG_DEBUG : LOG_WARNING,
+                               r,
+                               "Failed to connect to user journal instance socket '%s', ignoring: %m", p);
+        return r;
+
+}
+
+static int connect_system_journal_socket(
                 int fd,
                 const char *log_namespace,
                 uid_t uid,
@@ -340,7 +357,10 @@ static int connect_logger_as(
         if (fd < 0)
                 return -errno;
 
-        r = connect_journal_socket(fd, context->log_namespace, uid, gid);
+        if (MANAGER_IS_USER(unit->manager))
+                r = connect_user_journal_socket(fd, uid);
+        if (MANAGER_IS_SYSTEM(unit->manager) || r == -ENOENT)
+                r = connect_system_journal_socket(fd, context->log_namespace, uid, gid);
         if (r < 0)
                 return r;
 

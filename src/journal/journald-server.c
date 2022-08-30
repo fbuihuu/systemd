@@ -43,6 +43,7 @@
 #include "missing_audit.h"
 #include "mkdir.h"
 #include "parse-util.h"
+#include "path-lookup.h"
 #include "path-util.h"
 #include "proc-cmdline.h"
 #include "process-util.h"
@@ -269,11 +270,14 @@ static bool uid_for_system_journal(uid_t uid) {
         return uid_is_system(uid) || uid_is_dynamic(uid) || uid == UID_NOBODY;
 }
 
-static void server_add_acls(ManagedJournalFile *f, uid_t uid) {
+static void server_add_acls(Server *s, ManagedJournalFile *f, uid_t uid) {
         assert(f);
 
 #if HAVE_ACL
         int r;
+
+        if (SERVER_IS_USER(s))
+                return;
 
         if (uid_for_system_journal(uid))
                 return;
@@ -355,8 +359,15 @@ static bool flushed_flag_is_set(Server *s) {
 }
 
 static int system_journal_open(Server *s, bool flush_requested, bool relinquish_requested) {
-        const char *fn;
+        char buf[sizeof("user-") + DECIMAL_STR_MAX(uid_t) + sizeof(".journal")];
+        const char *fn, *bn;
         int r = 0;
+
+        if (SERVER_IS_USER(s)) {
+                xsprintf(buf, "user-" UID_FMT ".journal", getuid());
+                bn = buf;
+        } else
+                bn = "system.journal";
 
         if (!s->persistent_journal &&
             IN_SET(s->storage, STORAGE_PERSISTENT, STORAGE_AUTO) &&
@@ -372,10 +383,10 @@ static int system_journal_open(Server *s, bool flush_requested, bool relinquish_
 
                 (void) mkdir(s->persistent_storage.path, 0755);
 
-                fn = strjoina(s->persistent_storage.path, "/system.journal");
+                fn = strjoina(s->persistent_storage.path, "/", bn);
                 r = open_journal(s, true, fn, O_RDWR|O_CREAT, s->seal, &s->persistent_storage.metrics, &s->persistent_journal);
                 if (r >= 0) {
-                        server_add_acls(s->persistent_journal, 0);
+                        server_add_acls(s, s->persistent_journal, 0);
                         (void) cache_space_refresh(s, &s->persistent_storage);
                         patch_min_use(&s->persistent_storage);
                 } else {
@@ -398,7 +409,7 @@ static int system_journal_open(Server *s, bool flush_requested, bool relinquish_
         if (!s->volatile_journal &&
             (s->storage != STORAGE_NONE)) {
 
-                fn = strjoina(s->volatile_storage.path, "/system.journal");
+                fn = strjoina(s->volatile_storage.path, "/", bn);
 
                 if (s->persistent_journal && !relinquish_requested) {
 
@@ -427,7 +438,7 @@ static int system_journal_open(Server *s, bool flush_requested, bool relinquish_
                 }
 
                 if (s->volatile_journal) {
-                        server_add_acls(s->volatile_journal, 0);
+                        server_add_acls(s, s->volatile_journal, 0);
                         (void) cache_space_refresh(s, &s->volatile_storage);
                         patch_min_use(&s->volatile_storage);
                 }
@@ -443,6 +454,7 @@ static int find_user_journal(Server *s, uid_t uid, JournalStorage *storage, Mana
 
         assert(s);
         assert(storage);
+        assert(SERVER_IS_SYSTEM(s));
         assert(!uid_for_system_journal(uid));
 
         if (s->split_mode == SPLIT_NONE ||
@@ -482,7 +494,7 @@ static int find_user_journal(Server *s, uid_t uid, JournalStorage *storage, Mana
         if (r < 0)
                 return r;
 
-        server_add_acls(f, uid);
+        server_add_acls(s, f, uid);
 
 found:
         *ret = TAKE_PTR(f);
@@ -507,7 +519,7 @@ static ManagedJournalFile* find_journal(Server *s, uid_t uid) {
          * Fixes https://github.com/systemd/systemd/issues/3968 */
         (void) system_journal_open(s, false, false);
 
-        if (!uid_for_system_journal(uid)) {
+        if (SERVER_IS_SYSTEM(s) && !uid_for_system_journal(uid)) {
                 JournalStorage *storage;
                 ManagedJournalFile *f;
 
@@ -547,11 +559,11 @@ static int do_rotate(
         if (r < 0) {
                 if (*f)
                         return log_error_errno(r, "Failed to rotate %s: %m", (*f)->file->path);
-                else
-                        return log_error_errno(r, "Failed to create new %s journal: %m", name);
+
+                return log_error_errno(r, "Failed to create new %s journal: %m", name);
         }
 
-        server_add_acls(*f, uid);
+        server_add_acls(s, *f, uid);
         return r;
 }
 
@@ -1220,7 +1232,7 @@ static int do_flush(Server *s, sd_journal *j) {
                 if (r < 0 && r != -EREMOTE)
                         return log_error_errno(r, "Can't retrieve uid from filename '%s': %m", f->path);
 
-                if (!uid_for_system_journal(uid)) {
+                if (SERVER_IS_SYSTEM(s) && !uid_for_system_journal(uid)) {
                         ManagedJournalFile *p;
 
                         r = find_user_journal(s, uid, &s->persistent_storage, &p);
@@ -1808,37 +1820,81 @@ static int parse_proc_cmdline_item(const char *key, const char *value, void *dat
         return 0;
 }
 
-static int server_parse_config_file(Server *s) {
+/* FIXME: maybe create a generic helper and use it in main.c too */
+static int server_find_user_config_paths(const char *suffix, char ***ret_files, char ***ret_dirs) {
+        _cleanup_free_ char *base = NULL;
+        _cleanup_strv_free_ char **files = NULL, **dirs = NULL;
         int r;
+
+        r = xdg_user_config_dir(&base, "/systemd");
+        if (r < 0)
+                return r;
+
+        r = strv_extendf(&files, "%s/%s", base, suffix);
+        if (r < 0)
+                return r;
+
+        r = strv_extendf(&files, PKGSYSCONFDIR "/%s", suffix);
+        if (r < 0)
+                return r;
+
+        r = strv_consume(&dirs, TAKE_PTR(base));
+        if (r < 0)
+                return r;
+
+        r = strv_extend_strv(&dirs, CONF_PATHS_STRV("systemd"), false);
+        if (r < 0)
+                return r;
+
+        *ret_files = TAKE_PTR(files);
+        *ret_dirs = TAKE_PTR(dirs);
+        return 0;
+}
+
+static int server_parse_user_config_file(Server *s) {
+        _cleanup_strv_free_ char **files = NULL, **dirs = NULL;
+        int r;
+
+        r = server_find_user_config_paths("journald-user.conf", &files, &dirs);
+        if (r < 0)
+                return log_error_errno(r, "Failed to determine config file paths: %m");
+
+        return config_parse_many(
+                        (const char* const*) files,
+                        (const char* const*) dirs,
+                        "journald-user.conf.d",
+                        "Journal\0",
+                        config_item_perf_lookup, journald_user_gperf_lookup,
+                        CONFIG_PARSE_WARN, s, NULL, NULL);
+}
+
+static int server_parse_config_file(Server *s) {
+        const char *conf_file, *dropin_dirname;
 
         assert(s);
 
-        if (s->namespace) {
-                const char *namespaced, *dropin_dirname;
+        if (SERVER_IS_USER(s))
+                return server_parse_user_config_file(s);
 
-                /* If we are running in namespace mode, load the namespace specific configuration file, and nothing else */
-                namespaced = strjoina(PKGSYSCONFDIR "/journald@", s->namespace, ".conf");
-                dropin_dirname = strjoina("journald@", s->namespace, ".conf.d");
+        /* If we are running in namespace mode, load the namespace specific configuration file, and nothing
+         * else */
 
-                r = config_parse_many(
-                                STRV_MAKE_CONST(namespaced),
-                                (const char* const*) CONF_PATHS_STRV("systemd"),
-                                dropin_dirname,
-                                "Journal\0",
-                                config_item_perf_lookup, journald_gperf_lookup,
-                                CONFIG_PARSE_WARN, s, NULL, NULL);
-                if (r < 0)
-                        return r;
+        dropin_dirname = s->namespace ?
+                strjoina("journald@", s->namespace, ".conf.d") :
+                "journald.conf.d";
 
-                return 0;
-        }
+        conf_file = s->namespace ?
+                strjoina(PKGSYSCONFDIR "/journald@", s->namespace, ".conf") :
+                "journald.conf";
 
-        return config_parse_many_nulstr(
-                        PKGSYSCONFDIR "/journald.conf",
-                        CONF_PATHS_NULSTR("systemd/journald.conf.d"),
+        return config_parse_many(
+                        STRV_MAKE_CONST(conf_file),
+                        (const char* const*) CONF_PATHS_STRV("systemd"),
+                        dropin_dirname,
                         "Journal\0",
                         config_item_perf_lookup, journald_gperf_lookup,
-                        CONFIG_PARSE_WARN, s, NULL);
+                        CONFIG_PARSE_WARN, s, NULL, NULL);
+
 }
 
 static int server_dispatch_sync(sd_event_source *es, usec_t t, void *userdata) {
@@ -2212,11 +2268,14 @@ static void vl_disconnect(VarlinkServer *server, Varlink *link, void *userdata) 
 }
 
 static int server_open_varlink(Server *s, const char *socket, int fd) {
+        int perm_flag;
         int r;
 
         assert(s);
 
-        r = varlink_server_new(&s->varlink_server, VARLINK_SERVER_ROOT_ONLY|VARLINK_SERVER_INHERIT_USERDATA);
+        perm_flag = SERVER_IS_SYSTEM(s) ? VARLINK_SERVER_ROOT_ONLY : VARLINK_SERVER_MYSELF_ONLY;
+
+        r = varlink_server_new(&s->varlink_server, perm_flag|VARLINK_SERVER_INHERIT_USERDATA);
         if (r < 0)
                 return r;
 
@@ -2336,6 +2395,9 @@ static int set_namespace(Server *s, const char *namespace) {
         if (!namespace)
                 return 0;
 
+        if (SERVER_IS_USER(s))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Log namespacing is not available is user mode, aborting");
+
         if (!log_namespace_name_valid(namespace))
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Specified namespace name not valid, refusing: %s", namespace);
 
@@ -2350,8 +2412,98 @@ static int set_namespace(Server *s, const char *namespace) {
         return 1;
 }
 
-int server_init(Server *s, const char *namespace) {
-        const char *native_socket, *syslog_socket, *stdout_socket, *varlink_socket, *e;
+static int set_runtime_directory(Server *s) {
+        char *p;
+        int r;
+
+        if (SERVER_IS_SYSTEM(s)) {
+                const char *q = "/run/systemd/journal";
+
+                q = getenv("RUNTIME_DIRECTORY");
+                if (!q)
+                        q = "/run/systemd/journal";
+
+                if (s->namespace)
+                        q = strjoina(q, ".", s->namespace);
+
+                p = strdup(q);
+                if (!p)
+                        return log_oom();
+        } else {
+                r = xdg_user_runtime_dir(&p, "/systemd/journal");
+                if (r < 0)
+                        return log_error_errno(r, "$XDG_RUNTIME_DIR is not set: %m");
+        }
+
+        s->runtime_directory = p;
+
+        (void) mkdir_p(s->runtime_directory, 0755);
+        return 0;
+}
+
+static int set_volatile_storage_path(Server *s) {
+        char *p;
+        int r;
+
+        if (SERVER_IS_SYSTEM(s)) {
+                const char *q = strjoina("/run/log/journal/", SERVER_MACHINE_ID(s));
+
+                if (s->namespace)
+                        q = strjoina(q, ".", s->namespace);
+
+                p = strdup(q);
+                if (!p)
+                        return log_oom();
+        } else {
+                r = xdg_user_runtime_dir(&p, strjoina("/log/journal/", SERVER_MACHINE_ID(s)));
+                if (r < 0)
+                        return log_error_errno(r, "$XDG_RUNTIME_DIR is not set: %m");
+        }
+
+        s->volatile_storage.path = p;
+        return 0;
+}
+
+static int set_persistent_storage_path(Server *s) {
+        char *p;
+        int r;
+
+        if (SERVER_IS_SYSTEM(s)) {
+                const char *q;
+
+                q = getenv("LOGS_DIRECTORY");
+                if (!q)
+                        q = "/var/log/journal";
+
+                if (s->namespace)
+                        p = strjoin(q, "/", SERVER_MACHINE_ID(s), ".", s->namespace);
+                else
+                        p = strjoin(q, "/", SERVER_MACHINE_ID(s));
+                if (!p)
+                        return log_oom();
+
+        } else {
+                r = xdg_user_state_dir(&p, strjoina("/log/journal/", SERVER_MACHINE_ID(s)));
+                if (r < 0)
+                        return log_error_errno(r, "$XDG_RUNTIME_DIR is not set: %m");
+        }
+
+        s->persistent_storage.path = p;
+        return 0;
+}
+
+static int set_storage_paths(Server *s) {
+        int r;
+
+        r = set_volatile_storage_path(s);
+        if (r < 0)
+                return r;
+
+        return set_persistent_storage_path(s);
+}
+
+int server_init(Server *s, Mode mode, const char *namespace) {
+        const char *native_socket, *syslog_socket, *stdout_socket, *varlink_socket;
         _cleanup_fdset_free_ FDSet *fds = NULL;
         int n, r, fd, varlink_fd = -1;
         bool no_sockets;
@@ -2359,6 +2511,8 @@ int server_init(Server *s, const char *namespace) {
         assert(s);
 
         *s = (Server) {
+                .mode = mode,
+
                 .syslog_fd = -1,
                 .native_fd = -1,
                 .stdout_fd = -1,
@@ -2383,7 +2537,7 @@ int server_init(Server *s, const char *namespace) {
                 .ratelimit_interval = DEFAULT_RATE_LIMIT_INTERVAL,
                 .ratelimit_burst = DEFAULT_RATE_LIMIT_BURST,
 
-                .forward_to_wall = true,
+                .forward_to_wall = mode == MODE_SYSTEM,
 
                 .max_file_usec = DEFAULT_MAX_FILE_USEC,
 
@@ -2404,20 +2558,26 @@ int server_init(Server *s, const char *namespace) {
                 },
         };
 
+        if (SERVER_IS_USER(s) && uid_for_system_journal(getuid()))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "User instances can be started by unprivileged users only, aborting.");
+
         r = set_namespace(s, namespace);
         if (r < 0)
                 return r;
 
         /* By default, only read from /dev/kmsg if are the main namespace */
-        s->read_kmsg = !s->namespace;
+        s->read_kmsg = SERVER_IS_SYSTEM(s) && !s->namespace;
         s->storage = s->namespace ? STORAGE_PERSISTENT : STORAGE_AUTO;
 
         journal_reset_metrics(&s->persistent_storage.metrics);
         journal_reset_metrics(&s->volatile_storage.metrics);
 
-        server_parse_config_file(s);
+        r = server_parse_config_file(s);
+        if (r < 0)
+                log_warning_errno(r, "Failed to parse config file, ignoring: %m");
 
-        if (!s->namespace) {
+        if (SERVER_IS_SYSTEM(s) && !s->namespace) {
                 /* Parse kernel command line, but only if we are not a namespace instance */
                 r = proc_cmdline_parse(parse_proc_cmdline_item, s, PROC_CMDLINE_STRIP_RD_PREFIX);
                 if (r < 0)
@@ -2430,21 +2590,23 @@ int server_init(Server *s, const char *namespace) {
                 s->ratelimit_interval = s->ratelimit_burst = 0;
         }
 
-        e = getenv("RUNTIME_DIRECTORY");
-        if (e)
-                s->runtime_directory = strdup(e);
-        else if (s->namespace)
-                s->runtime_directory = strjoin("/run/systemd/journal.", s->namespace);
-        else
-                s->runtime_directory = strdup("/run/systemd/journal");
-        if (!s->runtime_directory)
-                return log_oom();
+        r = set_runtime_directory(s);
+        if (r < 0)
+                return r;
 
-        (void) mkdir_p(s->runtime_directory, 0755);
+        if (SERVER_IS_SYSTEM(s)) {
+                s->user_journals = ordered_hashmap_new(&managed_journal_file_hash_ops);
+                if (!s->user_journals)
+                        return log_oom();
+        } else {
+                const char *fn;
 
-        s->user_journals = ordered_hashmap_new(&managed_journal_file_hash_ops);
-        if (!s->user_journals)
-                return log_oom();
+                /* User instances have always access to their persitent storage. */
+                fn = strjoina(s->runtime_directory, "/flushed");
+                r = touch(fn);
+                if (r < 0 && r != -EEXIST)
+                        log_warning_errno(r, "Failed to create file %s, ignoring: %m", fn);
+        }
 
         s->mmap = mmap_cache_new();
         if (!s->mmap)
@@ -2502,6 +2664,10 @@ int server_init(Server *s, const char *namespace) {
                         varlink_fd = fd;
                 } else if (sd_is_socket(fd, AF_NETLINK, SOCK_RAW, -1) > 0) {
 
+                        if (SERVER_IS_USER(s))
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                       "Audit socket passed to user instance, aborting.");
+
                         if (s->audit_fd >= 0)
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                                        "Too many audit sockets passed.");
@@ -2549,16 +2715,18 @@ int server_init(Server *s, const char *namespace) {
         if (r < 0)
                 return r;
 
-        /* /dev/kmsg */
-        r = server_open_dev_kmsg(s);
-        if (r < 0)
-                return r;
-
-        /* Unless we got *some* sockets and not audit, open audit socket */
-        if (s->audit_fd >= 0 || no_sockets) {
-                r = server_open_audit(s);
+        if (SERVER_IS_SYSTEM(s)) {
+                /* /dev/kmsg */
+                r = server_open_dev_kmsg(s);
                 if (r < 0)
                         return r;
+
+                /* Unless we got *some* sockets and not audit, open audit socket */
+                if (s->audit_fd >= 0 || no_sockets) {
+                        r = server_open_audit(s);
+                        if (r < 0)
+                                return r;
+                }
         }
 
         r = server_open_varlink(s, varlink_socket, varlink_fd);
@@ -2589,22 +2757,9 @@ int server_init(Server *s, const char *namespace) {
         server_cache_boot_id(s);
         server_cache_machine_id(s);
 
-        if (s->namespace)
-                s->volatile_storage.path = strjoin("/run/log/journal/", SERVER_MACHINE_ID(s), ".", s->namespace);
-        else
-                s->volatile_storage.path = strjoin("/run/log/journal/", SERVER_MACHINE_ID(s));
-        if (!s->volatile_storage.path)
-                return log_oom();
-
-        e = getenv("LOGS_DIRECTORY");
-        if (e)
-                s->persistent_storage.path = strdup(e);
-        else if (s->namespace)
-                s->persistent_storage.path = strjoin("/var/log/journal/", SERVER_MACHINE_ID(s), ".", s->namespace);
-        else
-                s->persistent_storage.path = strjoin("/var/log/journal/", SERVER_MACHINE_ID(s));
-        if (!s->persistent_storage.path)
-                return log_oom();
+        r = set_storage_paths(s);
+        if (r < 0)
+                return r;
 
         (void) server_connect_notify(s);
 
@@ -2649,7 +2804,8 @@ void server_done(Server *s) {
         (void) managed_journal_file_close(s->persistent_journal);
         (void) managed_journal_file_close(s->volatile_journal);
 
-        ordered_hashmap_free(s->user_journals);
+        if (SERVER_IS_SYSTEM(s))
+                ordered_hashmap_free(s->user_journals);
 
         varlink_server_unref(s->varlink_server);
 
