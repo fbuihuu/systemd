@@ -33,6 +33,7 @@
 #include "list.h"
 #include "lookup3.h"
 #include "nulstr-util.h"
+#include "path-lookup.h"
 #include "path-util.h"
 #include "process-util.h"
 #include "replace-var.h"
@@ -1826,9 +1827,11 @@ static void remove_directory(sd_journal *j, Directory *d) {
 
 static int add_search_paths(sd_journal *j) {
 
-        static const char search_paths[] =
+        static const char system_search_paths[] =
                 "/run/log/journal\0"
                 "/var/log/journal\0";
+
+        _cleanup_free_ char *xur = NULL, *xus = NULL;
         const char *p;
 
         assert(j);
@@ -1836,8 +1839,14 @@ static int add_search_paths(sd_journal *j) {
         /* We ignore most errors here, since the idea is to only open
          * what's actually accessible, and ignore the rest. */
 
-        NULSTR_FOREACH(p, search_paths)
+        NULSTR_FOREACH(p, system_search_paths)
                 (void) add_root_directory(j, p, true);
+
+        if (xdg_user_runtime_dir(&xur, "/log/journal/") >= 0)
+                (void) add_root_directory(j, xur, true);
+
+        if (xdg_user_state_dir(&xus, "/log/journal/") >= 0)
+                        (void) add_root_directory(j, xus, true);
 
         if (!(j->flags & SD_JOURNAL_LOCAL_ONLY))
                 (void) add_root_directory(j, "/var/log/journal/remote", true);
