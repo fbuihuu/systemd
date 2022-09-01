@@ -358,7 +358,7 @@ static bool flushed_flag_is_set(Server *s) {
         return access(fn, F_OK) >= 0;
 }
 
-static int system_journal_open(Server *s, bool flush_requested, bool relinquish_requested) {
+static int server_journal_open(Server *s, bool flush_requested, bool relinquish_requested) {
         char buf[sizeof("user-") + DECIMAL_STR_MAX(uid_t) + sizeof(".journal")];
         const char *fn, *bn;
         int r = 0;
@@ -513,11 +513,11 @@ static ManagedJournalFile* find_journal(Server *s, uid_t uid) {
          * NULL.  Unless we revisit opening, even after space is made available we'll continue to
          * return NULL indefinitely.
          *
-         * system_journal_open() is a noop if the journals are already open, so we can just call it
+         * server_journal_open() is a noop if the journals are already open, so we can just call it
          * here to recover from failed rotates (or anything else that's left the journals as NULL).
          *
          * Fixes https://github.com/systemd/systemd/issues/3968 */
-        (void) system_journal_open(s, false, false);
+        (void) server_journal_open(s, false, false);
 
         if (SERVER_IS_SYSTEM(s) && !uid_for_system_journal(uid)) {
                 JournalStorage *storage;
@@ -1307,7 +1307,7 @@ int server_flush_to_var(Server *s, bool require_flag_file) {
         sd_journal_set_data_threshold(j, 0);
 
         /* Try switching the system journal from volatile to persistent */
-        (void) system_journal_open(s, true, false);
+        (void) server_journal_open(s, true, false);
 
         if (!s->persistent_journal)
                 return 0;       /* persistent mode disabled */
@@ -1361,7 +1361,7 @@ static int server_relinquish_var(Server *s) {
 
         log_debug("Relinquishing %s...", s->persistent_storage.path);
 
-        (void) system_journal_open(s, false, true);
+        (void) server_journal_open(s, false, true);
 
         s->persistent_journal = managed_journal_file_close(s->persistent_journal);
         ordered_hashmap_clear(s->user_journals);
@@ -2765,7 +2765,7 @@ int server_init(Server *s, Mode mode, const char *namespace) {
 
         (void) client_context_acquire_default(s);
 
-        r = system_journal_open(s, false, false);
+        r = server_journal_open(s, false, false);
         if (r < 0)
                 return r;
 
