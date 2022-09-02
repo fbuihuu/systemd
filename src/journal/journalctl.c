@@ -52,6 +52,7 @@
 #include "pager.h"
 #include "parse-argument.h"
 #include "parse-util.h"
+#include "path-lookup.h"
 #include "path-util.h"
 #include "pcre2-util.h"
 #include "pretty-print.h"
@@ -79,6 +80,11 @@ enum {
         ARG_LINES_DEFAULT = -2,
         ARG_LINES_ALL = -1,
 };
+
+typedef enum ActionMode {
+        ACTION_MODE_SYSTEM,
+        ACTION_MODE_USER,
+} ActionMode;
 
 static OutputMode arg_output = OUTPUT_SHORT;
 static JsonFormatFlags arg_json_format_flags = JSON_FORMAT_OFF;
@@ -118,6 +124,7 @@ static char **arg_user_units = NULL;
 static const char *arg_field = NULL;
 static bool arg_catalog = false;
 static bool arg_reverse = false;
+static ActionMode arg_action_mode = ACTION_MODE_SYSTEM;
 static int arg_journal_type = 0;
 static int arg_namespace_flags = 0;
 static char *arg_root = NULL;
@@ -669,10 +676,12 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_SYSTEM:
+                        arg_action_mode = ACTION_MODE_SYSTEM;
                         arg_journal_type |= SD_JOURNAL_SYSTEM;
                         break;
 
                 case ARG_USER:
+                        arg_action_mode = ACTION_MODE_USER;
                         arg_journal_type |= SD_JOURNAL_CURRENT_USER;
                         break;
 
@@ -2007,15 +2016,27 @@ static int verify(sd_journal *j) {
 
 static int simple_varlink_call(const char *option, const char *method) {
         _cleanup_(varlink_flush_close_unrefp) Varlink *link = NULL;
-        const char *error, *fn;
+        _cleanup_free_ char *fn = NULL;
+        const char *error;
         int r;
 
         if (arg_machine)
                 return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "%s is not supported in conjunction with --machine=.", option);
 
-        fn = arg_namespace ?
-                strjoina("/run/systemd/journal.", arg_namespace, "/io.systemd.journal") :
-                "/run/systemd/journal/io.systemd.journal";
+        if (arg_action_mode == ACTION_MODE_SYSTEM) {
+                const char *q = "/run/systemd/journal";
+
+                if (arg_namespace)
+                        q = strjoina(q, ".", arg_namespace);
+
+                fn = strjoin(q, "/io.systemd.journal");
+                if (!fn)
+                        return log_oom();
+        } else {
+                r = xdg_user_runtime_dir(&fn, "/systemd/journal/io.systemd.journal");
+                if (r < 0)
+                        return log_error_errno(r, "$XDG_RUNTIME_DIR is not set: %m");
+        }
 
         r = varlink_connect_address(&link, fn);
         if (r < 0)
