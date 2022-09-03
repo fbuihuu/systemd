@@ -7,6 +7,8 @@ sources = files(
         'journald-console.h',
         'journald-context.c',
         'journald-context.h',
+        'journald-demux.c',
+        'journald-demux.h',
         'journald-kmsg.c',
         'journald-kmsg.h',
         'journald-native.c',

@@ -33,6 +33,7 @@
 #include "journal-vacuum.h"
 #include "journald-audit.h"
 #include "journald-context.h"
+#include "journald-demux.h"
 #include "journald-kmsg.h"
 #include "journald-native.h"
 #include "journald-rate-limit.h"
@@ -1474,6 +1475,14 @@ int server_process_datagram(
         /* And a trailing NUL, just in case */
         s->buffer[n] = 0;
 
+        if (SERVER_IS_SYSTEM(s) && ucred && !uid_for_system_journal(ucred->uid)) {
+                UserInstanceContext *c;
+
+                c = hashmap_get(s->user_instance_contexts, UID_TO_PTR(ucred->uid));
+                if (c)
+                        return server_forward_datagram_to_demux(s, fd, s->buffer, n, ucred, c);
+        }
+
         if (fd == s->syslog_fd) {
                 if (n > 0 && n_fds == 0)
                         server_process_syslog_message(s, s->buffer, n, ucred, tv, label, label_len);
@@ -1489,6 +1498,7 @@ int server_process_datagram(
                         log_warning("Got too many file descriptors via native socket. Ignoring.");
 
         } else {
+                assert(SERVER_IS_SYSTEM(s));
                 assert(fd == s->audit_fd);
 
                 if (n > 0 && n_fds == 0)
@@ -2503,7 +2513,7 @@ static int set_storage_paths(Server *s) {
 }
 
 int server_init(Server *s, Mode mode, const char *namespace) {
-        const char *native_socket, *syslog_socket, *stdout_socket, *varlink_socket;
+        const char *native_socket, *syslog_socket, *stdout_socket, *varlink_socket, *demux_socket;
         _cleanup_fdset_free_ FDSet *fds = NULL;
         int n, r, fd, varlink_fd = -1;
         bool no_sockets;
@@ -2515,6 +2525,7 @@ int server_init(Server *s, Mode mode, const char *namespace) {
 
                 .syslog_fd = -1,
                 .native_fd = -1,
+                .demux_fd = -1,
                 .stdout_fd = -1,
                 .dev_kmsg_fd = -1,
                 .audit_fd = -1,
@@ -2598,6 +2609,10 @@ int server_init(Server *s, Mode mode, const char *namespace) {
                 s->user_journals = ordered_hashmap_new(&managed_journal_file_hash_ops);
                 if (!s->user_journals)
                         return log_oom();
+
+                s->user_instance_contexts = hashmap_new(NULL);
+                if (!s->user_instance_contexts)
+                        return log_oom();
         } else {
                 const char *fn;
 
@@ -2624,6 +2639,7 @@ int server_init(Server *s, Mode mode, const char *namespace) {
         if (n < 0)
                 return log_error_errno(n, "Failed to read listening file descriptors from environment: %m");
 
+        demux_socket = "/run/systemd/journal/demux";
         native_socket = strjoina(s->runtime_directory, "/socket");
         stdout_socket = strjoina(s->runtime_directory, "/stdout");
         syslog_socket = strjoina(s->runtime_directory, "/dev-log");
@@ -2698,8 +2714,6 @@ int server_init(Server *s, Mode mode, const char *namespace) {
 
         no_sockets = s->native_fd < 0 && s->stdout_fd < 0 && s->syslog_fd < 0 && s->audit_fd < 0 && varlink_fd < 0;
 
-        /* always open stdout, syslog, native, and kmsg sockets */
-
         /* systemd-journald.socket: /run/systemd/journal/stdout */
         r = server_open_stdout_socket(s, stdout_socket);
         if (r < 0)
@@ -2716,6 +2730,10 @@ int server_init(Server *s, Mode mode, const char *namespace) {
                 return r;
 
         if (SERVER_IS_SYSTEM(s)) {
+                r = server_open_demux_socket(s, demux_socket);
+                if (r < 0)
+                        return r;
+
                 /* /dev/kmsg */
                 r = server_open_dev_kmsg(s);
                 if (r < 0)
@@ -2727,6 +2745,12 @@ int server_init(Server *s, Mode mode, const char *namespace) {
                         if (r < 0)
                                 return r;
                 }
+        } else {
+                /* Request the system journald instance to forward us all logs sent by the user we're running
+                 * for. */
+                r = client_open_demux_socket(s, demux_socket);
+                if (r < 0)
+                        return r;
         }
 
         r = server_open_varlink(s, varlink_socket, varlink_fd);
@@ -2804,8 +2828,10 @@ void server_done(Server *s) {
         (void) managed_journal_file_close(s->persistent_journal);
         (void) managed_journal_file_close(s->volatile_journal);
 
-        if (SERVER_IS_SYSTEM(s))
+        if (SERVER_IS_SYSTEM(s)) {
                 ordered_hashmap_free(s->user_journals);
+                hashmap_free_with_destructor(s->user_instance_contexts, user_instance_context_free);
+        }
 
         varlink_server_unref(s->varlink_server);
 
@@ -2813,6 +2839,7 @@ void server_done(Server *s) {
         sd_event_source_unref(s->native_event_source);
         sd_event_source_unref(s->stdout_event_source);
         sd_event_source_unref(s->dev_kmsg_event_source);
+        sd_event_source_unref(s->demux_event_source);
         sd_event_source_unref(s->audit_event_source);
         sd_event_source_unref(s->sync_event_source);
         sd_event_source_unref(s->sigusr1_event_source);
@@ -2827,6 +2854,7 @@ void server_done(Server *s) {
         sd_event_unref(s->event);
 
         safe_close(s->syslog_fd);
+        safe_close(s->demux_fd);
         safe_close(s->native_fd);
         safe_close(s->stdout_fd);
         safe_close(s->dev_kmsg_fd);

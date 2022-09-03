@@ -11,6 +11,7 @@ typedef struct Server Server;
 #include "conf-parser.h"
 #include "hashmap.h"
 #include "journald-context.h"
+#include "journald-demux.h"
 #include "journald-rate-limit.h"
 #include "journald-stream.h"
 #include "list.h"
@@ -74,6 +75,7 @@ struct Server {
         char *namespace;
 
         int syslog_fd;
+        int demux_fd;
         int native_fd;
         int stdout_fd;
         int dev_kmsg_fd;
@@ -87,6 +89,7 @@ struct Server {
         sd_event_source *native_event_source;
         sd_event_source *stdout_event_source;
         sd_event_source *dev_kmsg_event_source;
+        sd_event_source *demux_event_source;
         sd_event_source *audit_event_source;
         sd_event_source *sync_event_source;
         sd_event_source *sigusr1_event_source;
@@ -184,6 +187,8 @@ struct Server {
         ClientContext *pid1_context; /* the context of PID 1 */
 
         VarlinkServer *varlink_server;
+
+        Hashmap *user_instance_contexts;               /* used by the system instance exclusively */
 };
 
 #define SERVER_IS_SYSTEM(s) ((s)->mode == MODE_SYSTEM)
